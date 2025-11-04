@@ -23,6 +23,8 @@ IR_DEV = "/dev/video2"
 
 pipeline_desc = f"""
 v4l2src device={EO_DEV} !
+image/jpeg,width=1280,height=720,framerate=30/1 !
+jpegdec !
 videoconvert !
 videoscale !
 video/x-raw,width=1280,height=720 !
