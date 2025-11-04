@@ -24,7 +24,7 @@ IR_DEV = "/dev/video2"
 pipeline_desc = f"""
 v4l2src device={EO_DEV} !
 image/jpeg,width=1920,height=1080,framerate=30/1 !
-nvjpegdec !
+jpegdec !
 nvvidconv !
 videoscale !
 video/x-raw,width=1920,height=1080 !
@@ -38,7 +38,7 @@ comp.sink_2
 
 v4l2src device={IR_DEV} !
 image/jpeg,width=1920,height=1080,framerate=30/1 !
-nvjpegdec !
+jpegdec !
 nvvidconv !
 videoscale !
 video/x-raw,width=1920,height=1080 !
