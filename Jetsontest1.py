@@ -1,12 +1,18 @@
 import gi
 gi.require_version("Gst", "1.0")
-from gi.repository import Gst, GLib
+from gi.repository import Gst, GLib, GObject
 
 from threading import Thread
 from time import sleep, time
 import sys, tty, termios, select
 
 Gst.init(None)
+
+# ------------------ Config ------------------
+EO_DEV = "/dev/video0"
+IR_DEV = "/dev/video2"
+OUT_W = 1280
+OUT_H = 720
 
 MODE_WIDE = 0
 MODE_EO_ZOOM = 1
@@ -16,49 +22,83 @@ MODE_PIP_EO = 4
 MODE_PIP_IR = 5
 NUM_MODES = 6
 
-OUT_W = 1280
-OUT_H = 720
-EO_DEV = "/dev/video0"
-IR_DEV = "/dev/video2"
+EO_ZOOM_MIN = 2.0
+EO_ZOOM_MAX = 21.0   # lets overlay show up to 20.0x
+IR_ZOOM_MIN = 1.0
+IR_ZOOM_MAX = 8.0
+ZOOM_COOLDOWN = 0.1
+# --------------------------------------------
 
-pipeline_desc = f"""
-v4l2src device={EO_DEV} !
-image/jpeg,width=1280,height=720,framerate=30/1 !
-jpegdec !
-nvvidconv !
-videoscale !
-video/x-raw,width=1280,height=720 !
+def nv_element_exists(name: str) -> bool:
+    return Gst.ElementFactory.find(name) is not None
+
+HAVE_NVCOMPOSITOR = nv_element_exists("nvcompositor")
+HAVE_NVJPEGDEC   = nv_element_exists("nvjpegdec")
+HAVE_NVVIDCONV   = nv_element_exists("nvvidconv")
+
+# Build the pipeline description depending on available plugins.
+# Strategy:
+# - Always use nvjpegdec/nvvidconv when available (GPU decode/scale)
+# - Prefer nvcompositor (GPU) if present, otherwise fall back to compositor (CPU)
+# - Do cropping with videocrop (CPU) for maximum compatibility; zoom math unchanged.
+#   (If you want to try full-GPU cropping later, we can switch to nvvidconv src-crop or nvcompositor src crop per pad.)
+
+def build_pipeline_desc():
+    # Camera branches (GPU decode path if available)
+    eo_src  = f'v4l2src device={EO_DEV} io-mode=2 do-timestamp=true ! image/jpeg,width=1280,height=720,framerate=30/1 ! '
+    ir_src  = f'v4l2src device={IR_DEV} io-mode=2 do-timestamp=true ! image/jpeg,width=1280,height=720,framerate=30/1 ! '
+
+    jpegdec = 'nvjpegdec' if HAVE_NVJPEGDEC else 'jpegdec'
+    vconv   = 'nvvidconv' if HAVE_NVVIDCONV else 'videoconvert'
+
+    # Convert to NVMM when using nvvidconv; compositor fallback expects system memory.
+    # We’ll convert to standard system memory just before compositor if using CPU compositor.
+    # If using nvcompositor, we can keep NVMM into it.
+    if HAVE_NVCOMPOSITOR:
+        comp_name = 'nvcompositor'
+        to_full_w  = f'{vconv} ! video/x-raw(memory:NVMM),width={OUT_W},height={OUT_H}'
+        to_small_w = f'{vconv} ! video/x-raw(memory:NVMM),width=320,height=180'
+        comp_caps  = f'video/x-raw(memory:NVMM),width={OUT_W},height={OUT_H}'
+        tail_to_mem = f'{vconv} ! video/x-raw,format=RGBA,width={OUT_W},height={OUT_H}'  # bring to sysmem for textoverlay
+    else:
+        comp_name = 'compositor'
+        to_full_w  = f'{vconv} ! videoscale ! video/x-raw,width={OUT_W},height={OUT_H}'
+        to_small_w = f'{vconv} ! videoscale ! video/x-raw,width=320,height=180'
+        comp_caps  = f'video/x-raw,width={OUT_W},height={OUT_H}'
+        tail_to_mem = ''  # already in sysmem
+
+    desc = f"""
+{eo_src}{jpegdec} !
+{to_full_w} !
+queue max-size-buffers=1 leaky=downstream !
 tee name=teo
 
-teo. ! queue ! videocrop name=eocrop ! comp.sink_0
-teo. ! queue ! videocrop name=eocrop_small !
-videoscale !
-video/x-raw,width=320,height=180 !
-comp.sink_2
+teo. ! queue max-size-buffers=1 leaky=downstream ! videocrop name=eocrop ! comp.sink_0
+teo. ! queue max-size-buffers=1 leaky=downstream ! videocrop name=eocrop_small ! {to_small_w} ! comp.sink_2
 
-v4l2src device={IR_DEV} !
-image/jpeg,width=1280,height=720,framerate=30/1 !
-jpegdec !
-nvvidconv !
-videoscale !
-video/x-raw,width=1280,height=720 !
+{ir_src}{jpegdec} !
+{to_full_w} !
+queue max-size-buffers=1 leaky=downstream !
 tee name=tir
 
-tir. ! queue ! videocrop name=ircrop ! comp.sink_1
-tir. ! queue ! videocrop name=ircrop_small !
-videoscale !
-video/x-raw,width=320,height=180 !
-comp.sink_3
+tir. ! queue max-size-buffers=1 leaky=downstream ! videocrop name=ircrop ! comp.sink_1
+tir. ! queue max-size-buffers=1 leaky=downstream ! videocrop name=ircrop_small ! {to_small_w} ! comp.sink_3
 
-nvcompositor name=comp background=black !
-video/x-raw,width=1280,height=720 !
-nvvidconv !
+{comp_name} name=comp background=black !
+{comp_caps} !
+{tail_to_mem} !
+videoconvert !
 textoverlay name=overlay valignment=top halignment=center font-desc="Sans 24" !
 nvoverlaysink sync=false
 """
+    # If you do not have nvoverlaysink on your image, swap the sink to autovideosink:
+    # desc = desc.replace("nvoverlaysink", "autovideosink")
+    return desc
 
+pipeline_desc = build_pipeline_desc()
 pipeline = Gst.parse_launch(pipeline_desc)
 
+# Grab handles
 comp = pipeline.get_by_name("comp")
 eocrop = pipeline.get_by_name("eocrop")
 ircrop = pipeline.get_by_name("ircrop")
@@ -66,20 +106,16 @@ eocrop_small = pipeline.get_by_name("eocrop_small")
 ircrop_small = pipeline.get_by_name("ircrop_small")
 overlay = pipeline.get_by_name("overlay")
 
+# compositor sink pads
 pad_cam_full = comp.get_static_pad("sink_0")
 pad_ir_full  = comp.get_static_pad("sink_1")
 pad_cam_small = comp.get_static_pad("sink_2")
 pad_ir_small  = comp.get_static_pad("sink_3")
 pads = [pad_cam_full, pad_ir_full, pad_cam_small, pad_ir_small]
 
+# Zoom state
 eo_zoom = 2.0
-EO_ZOOM_MIN = 2.0
-EO_ZOOM_MAX = 21.0
-IR_ZOOM_MIN = 1.0
-IR_ZOOM_MAX = 8.0
-
 current_mode = MODE_WIDE
-ZOOM_COOLDOWN = 0.1
 last_zoom_time = 0.0
 
 def clamp_eo(val):
@@ -114,9 +150,14 @@ def eo_step_down_clean(val):
         return new_val
 
 def reset_pads_and_crops():
+    # compositor pad sizes unset
     for p in pads:
+        # -1 resets to natural size
         p.set_property("width", -1)
         p.set_property("height", -1)
+        p.set_property("alpha", 0.0)
+
+    # reset all crops
     for c in (eocrop, ircrop, eocrop_small, ircrop_small):
         c.set_property("left", 0)
         c.set_property("right", 0)
@@ -131,7 +172,7 @@ def update_overlay_text():
         overlay.set_property("text", "Zoom %.1fx" % disp)
     elif current_mode == MODE_IR:
         ir_val = derive_ir(eo_zoom)
-        overlay.set_property("text", "PIP/IR ONLY | %.1fx" % ir_val)
+        overlay.set_property("text", "IR ONLY | %.1fx" % ir_val)
     elif current_mode == MODE_SPLIT:
         disp = eo_zoom - 1.0
         overlay.set_property("text", "SPLIT | Zoom %.1fx" % disp)
@@ -177,6 +218,7 @@ def apply_zoom(mode):
         eocrop.set_property("right", eo_right)
         eocrop.set_property("top", eo_top)
         eocrop.set_property("bottom", eo_bottom)
+
         pad_cam_full.set_property("alpha", 1.0)
         pad_cam_full.set_property("width", OUT_W)
         pad_cam_full.set_property("height", OUT_H)
@@ -189,6 +231,7 @@ def apply_zoom(mode):
         ircrop.set_property("right", ir_right)
         ircrop.set_property("top", ir_top)
         ircrop.set_property("bottom", ir_bottom)
+
         pad_ir_full.set_property("alpha", 1.0)
         pad_ir_full.set_property("width", OUT_W)
         pad_ir_full.set_property("height", OUT_H)
@@ -289,8 +332,7 @@ def schedule_apply():
         return False
     GLib.idle_add(_do)
 
-# ----- robust keyboard handling -----
-
+# Keyboard handling (SPACE / UP/i / DOWN/k)
 class KB:
     def __init__(self):
         self.fd = sys.stdin.fileno()
@@ -300,52 +342,42 @@ class KB:
             tty.setcbreak(self.fd)
         else:
             self.old = None
-
     def restore(self):
         if self.is_tty and self.old:
             termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old)
-
     def read_key(self):
-        # Non-blocking: returns b"UP", b"DOWN", b"SPACE" or None
-        # Also accepts ASCII: 'i'->UP, 'k'->DOWN
         r, _, _ = select.select([sys.stdin], [], [], 0) if self.is_tty else ([], [], [])
-        if not r:
-            return None
+        if not r: return None
         ch1 = sys.stdin.read(1)
-        if ch1 == " ":  # space
-            return b"SPACE"
-        if ch1 in ("i", "I"):
-            return b"UP"
-        if ch1 in ("k", "K"):
-            return b"DOWN"
-        if ch1 == "\x1b":  # ESC [ A/B for arrows
-            r, _, _ = select.select([sys.stdin], [], [], 0.002)
-            if not r:
-                return None
+        if ch1 == " ": return b"SPACE"
+        if ch1 in ("i","I"): return b"UP"
+        if ch1 in ("k","K"): return b"DOWN"
+        if ch1 == "\x1b":
+            r,_,_ = select.select([sys.stdin], [], [], 0.002)
+            if not r: return None
             ch2 = sys.stdin.read(1)
-            if ch2 != "[":
-                return None
-            r, _, _ = select.select([sys.stdin], [], [], 0.002)
-            if not r:
-                return None
+            if ch2 != "[": return None
+            r,_,_ = select.select([sys.stdin], [], [], 0.002)
+            if not r: return None
             ch3 = sys.stdin.read(1)
-            if ch3 == "A":
-                return b"UP"
-            if ch3 == "B":
-                return b"DOWN"
+            if ch3 == "A": return b"UP"
+            if ch3 == "B": return b"DOWN"
         return None
 
+# Main loop
 main_loop = GLib.MainLoop()
 main_loop_thread = Thread(target=main_loop.run, daemon=True)
 main_loop_thread.start()
 
 pipeline.set_state(Gst.State.PLAYING)
+# default to WIDE
+eo_zoom = 2.0
 set_mode(MODE_WIDE)
 
 if not sys.stdin.isatty():
-    print("Note: stdin is not a TTY. Use 'i' to zoom in, 'k' to zoom out, SPACE to switch modes.")
+    print("Note: stdin not a TTY. Use i/k for zoom, SPACE to switch modes.")
 
-print("Controls: SPACE = next layout | UP/i = zoom in | DOWN/k = zoom out | Ctrl+C to quit")
+print("Controls: SPACE=next | UP/i=zoom in | DOWN/k=zoom out | Ctrl+C quits")
 
 last_zoom_time = time()
 kb = KB()
