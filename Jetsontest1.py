@@ -16,42 +16,42 @@ MODE_PIP_EO = 4
 MODE_PIP_IR = 5
 NUM_MODES = 6
 
-OUT_W = 1280
-OUT_H = 720
+OUT_W = 1920    
+OUT_H = 1080
 EO_DEV = "/dev/video0"
 IR_DEV = "/dev/video2"
 
 pipeline_desc = f"""
 v4l2src device={EO_DEV} !
-image/jpeg,width=1280,height=720,framerate=30/1 !
+image/jpeg,width=1920,height=1080,framerate=30/1 !
 jpegdec !
 nvvidconv !
 videoscale !
-video/x-raw,width=1280,height=720 !
+video/x-raw,width=1920,height=1080 !
 tee name=teo
 
 teo. ! queue ! videocrop name=eocrop ! comp.sink_0
 teo. ! queue ! videocrop name=eocrop_small !
 videoscale !
-video/x-raw,width=320,height=180 !
+video/x-raw,width=640,height=320 !
 comp.sink_2
 
 v4l2src device={IR_DEV} !
-image/jpeg,width=1280,height=720,framerate=30/1 !
+image/jpeg,width=1920,height=1080,framerate=30/1 !
 jpegdec !
 nvvidconv !
 videoscale !
-video/x-raw,width=1280,height=720 !
+video/x-raw,width=1920,height=1080 !
 tee name=tir
 
 tir. ! queue ! videocrop name=ircrop ! comp.sink_1
 tir. ! queue ! videocrop name=ircrop_small !
 videoscale !
-video/x-raw,width=320,height=180 !
+video/x-raw,width=640,height=1320 !
 comp.sink_3
 
 compositor name=comp background=black !
-video/x-raw,width=1280,height=720 !
+video/x-raw,width=1920,height=1080 !
 nvvidconv !
 textoverlay name=overlay valignment=top halignment=center font-desc="Sans 24" !
 autovideosink sync=false
@@ -131,7 +131,7 @@ def update_overlay_text():
         overlay.set_property("text", "Zoom %.1fx" % disp)
     elif current_mode == MODE_IR:
         ir_val = derive_ir(eo_zoom)
-        overlay.set_property("text", "PIP/IR ONLY | %.1fx" % ir_val)
+        overlay.set_property("text", "IR | %.1fx" % ir_val)
     elif current_mode == MODE_SPLIT:
         disp = eo_zoom - 1.0
         overlay.set_property("text", "SPLIT | Zoom %.1fx" % disp)
@@ -197,7 +197,7 @@ def apply_zoom(mode):
         return
 
     if mode == MODE_SPLIT:
-        eo_target_w = 640.0 / eo_val
+        eo_target_w = 960 / eo_val
         extra_eo = eo_w - eo_target_w
         if extra_eo < 0: extra_eo = 0
         extra_eo_each = int(extra_eo / 2)
@@ -212,7 +212,7 @@ def apply_zoom(mode):
         pad_cam_full.set_property("xpos", 0)
         pad_cam_full.set_property("ypos", 0)
 
-        ir_target_w = 640.0 / ir_val
+        ir_target_w = 960 / ir_val
         extra_ir = ir_w - ir_target_w
         if extra_ir < 0: extra_ir = 0
         extra_ir_each = int(extra_ir / 2)
@@ -222,9 +222,9 @@ def apply_zoom(mode):
         ircrop.set_property("top", ir_top)
         ircrop.set_property("bottom", ir_bottom)
         pad_ir_full.set_property("alpha", 1.0)
-        pad_ir_full.set_property("width", 640)
-        pad_ir_full.set_property("height", 720)
-        pad_ir_full.set_property("xpos", 640)
+        pad_ir_full.set_property("width", 960)
+        pad_ir_full.set_property("height", 1080)
+        pad_ir_full.set_property("xpos", 960)
         pad_ir_full.set_property("ypos", 0)
         return
 
@@ -244,10 +244,10 @@ def apply_zoom(mode):
         ircrop_small.set_property("top", ir_top)
         ircrop_small.set_property("bottom", ir_bottom)
         pad_ir_small.set_property("alpha", 1.0)
-        pad_ir_small.set_property("width", 320)
-        pad_ir_small.set_property("height", 180)
-        pad_ir_small.set_property("xpos", OUT_W - 320)
-        pad_ir_small.set_property("ypos", OUT_H - 180)
+        pad_ir_small.set_property("width", 640)
+        pad_ir_small.set_property("height", 360)
+        pad_ir_small.set_property("xpos", OUT_W - 640)
+        pad_ir_small.set_property("ypos", OUT_H - 360)
         pad_ir_small.set_property("zorder", 10)
         return
 
@@ -267,10 +267,10 @@ def apply_zoom(mode):
         eocrop_small.set_property("top", eo_top)
         eocrop_small.set_property("bottom", eo_bottom)
         pad_cam_small.set_property("alpha", 1.0)
-        pad_cam_small.set_property("width", 320)
-        pad_cam_small.set_property("height", 180)
-        pad_cam_small.set_property("xpos", OUT_W - 320)
-        pad_cam_small.set_property("ypos", OUT_H - 180)
+        pad_cam_small.set_property("width", 640)
+        pad_cam_small.set_property("height", 360)
+        pad_cam_small.set_property("xpos", OUT_W - 640)
+        pad_cam_small.set_property("ypos", OUT_H - 360)
         pad_cam_small.set_property("zorder", 10)
         return
 
