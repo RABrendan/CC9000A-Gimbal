@@ -38,7 +38,7 @@ nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=320,height=180 !
 comp.sink_2
 
 v4l2src device={IR_DEV} io-mode=2 !
-image/jpeg,framerate=30/1 !  
+image/jpeg,framerate=30/1 !
 jpegdec !
 nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 !
 tee name=tir
@@ -54,9 +54,9 @@ comp.sink_3
 
 nvcompositor name=comp background=black !
 video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 !
-nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !
+nvvidconv ! video/x-raw,format=NV12 !            # drop NVMM for textoverlay
 textoverlay name=overlay valignment=top halignment=center font-desc="Sans 24" !
-nveglglessink sync=false
+nvvidconv ! nveglglessink sync=false
 """
 
 pipeline = Gst.parse_launch(pipeline_desc)
