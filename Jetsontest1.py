@@ -22,39 +22,41 @@ EO_DEV = "/dev/video0"
 IR_DEV = "/dev/video2"
 
 pipeline_desc = f"""
-v4l2src device={EO_DEV} !
-image/jpeg,width=1920,height=1080,framerate=30/1 !
+v4l2src device={EO_DEV} io-mode=2 !
+image/jpeg,width=1280,height=720,framerate=30/1 !
 jpegdec !
-nvvidconv !
-videoscale !
-video/x-raw,width=1920,height=1080 !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 !
 tee name=teo
 
-teo. ! queue ! videocrop name=eocrop ! comp.sink_0
-teo. ! queue ! videocrop name=eocrop_small !
-videoscale !
-video/x-raw,width=640,height=320 !
+teo. ! queue max-size-buffers=4 leaky=downstream !
+videocrop name=eocrop !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! comp.sink_0
+
+teo. ! queue max-size-buffers=4 leaky=downstream !
+videocrop name=eocrop_small !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=320,height=180 !
 comp.sink_2
 
-v4l2src device={IR_DEV} !
-image/jpeg,width=1920,height=1080,framerate=30/1 !
+v4l2src device={IR_DEV} io-mode=2 !
+image/jpeg,framerate=30/1 !  /* if your IR is MJPEG; if it's YUY2/Y16, see notes below */
 jpegdec !
-nvvidconv !
-videoscale !
-video/x-raw,width=1920,height=1080 !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 !
 tee name=tir
 
-tir. ! queue ! videocrop name=ircrop ! comp.sink_1
-tir. ! queue ! videocrop name=ircrop_small !
-videoscale !
-video/x-raw,width=640,height=1320 !
+tir. ! queue max-size-buffers=4 leaky=downstream !
+videocrop name=ircrop !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! comp.sink_1
+
+tir. ! queue max-size-buffers=4 leaky=downstream !
+videocrop name=ircrop_small !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=320,height=180 !
 comp.sink_3
 
-compositor name=comp background=black !
-video/x-raw,width=1920,height=1080 !
-nvvidconv !
+nvcompositor name=comp background=black !
+video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 !
+nvvidconv ! video/x-raw(memory:NVMM),format=NV12 !
 textoverlay name=overlay valignment=top halignment=center font-desc="Sans 24" !
-autovideosink sync=false
+nveglglessink sync=false
 """
 
 pipeline = Gst.parse_launch(pipeline_desc)
