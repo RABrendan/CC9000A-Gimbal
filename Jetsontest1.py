@@ -38,7 +38,7 @@ nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=320,height=180 !
 comp.sink_2
 
 v4l2src device={IR_DEV} io-mode=2 !
-image/jpeg,framerate=30/1 !  /* if your IR is MJPEG; if it's YUY2/Y16, see notes below */
+image/jpeg,framerate=30/1 !  
 jpegdec !
 nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width=1280,height=720 !
 tee name=tir
